@@ -16,12 +16,14 @@ Everything is passive by default — enumerating networks and reading your own h
 
 ## Why you'd use it
 
-- Turns "segmentation is configured" into a tested result with evidence
+- **Policy matrix** — declare the isolation you *intend*, and WiFiLeverage renders observed reality against it and flags every violation
+- **Segmentation graph** — a visual map of which zones can reach which, with multi-hop leverage paths (`guest → dmz → corp`) computed across merged footholds
 - Cross-segment reachability and client/AP isolation checks from a real foothold
+- **Baseline diffing** — compare two runs to catch segmentation regressions after a config change
 - Scope-aware — include/exclude rules mean excluded networks are never probed
-- Unprivileged: TCP-connect probing, no raw sockets or root required
+- Unprivileged and concurrent: threaded TCP-connect probing, no raw sockets or root
 - Degrades gracefully — uses `nmcli`/`iw`/`ip` when present, skips cleanly when not
-- JSON + Markdown reports you can drop straight into an engagement writeup
+- Reports in Markdown, JSON **and** a self-contained HTML page with the live graph
 - Standard library only, one dependency (PyYAML)
 
 ## Install
@@ -78,6 +80,22 @@ wifileverage run --iface wlan0 --active \
 wifileverage scope -S scope.yaml -x 10.20.9.0/24
 ```
 
+**Write an HTML report with the live segmentation graph:**
+
+```bash
+wifileverage run --iface wlan0 --active -S scope.yaml --html
+```
+
+**Build one graph from several footholds, then diff against a baseline:**
+
+```bash
+# one run per foothold (guest, iot, ...), then merge their JSON into one graph
+wifileverage graph reports/guest.json reports/iot.json -f mermaid
+wifileverage graph reports/guest.json reports/iot.json -f paths   # multi-hop pivots
+
+wifileverage diff reports/baseline.json reports/today.json        # what regressed
+```
+
 **Target specific modules and ports:**
 
 ```bash
@@ -92,6 +110,8 @@ wifileverage modules
 | `run` | Run a segmentation assessment (passive by default) |
 | `scan` | Passive wireless recon only — list in-range access points |
 | `scope` | Load and display the effective scope without probing |
+| `graph` | Build a segmentation graph from one or more report JSONs (ascii/mermaid/dot/paths) |
+| `diff` | Compare two reports — new reachable paths and policy violations |
 | `modules` | List available modules and their phase |
 
 ### Key run options
@@ -109,7 +129,9 @@ wifileverage modules
 | `--ports` | `22,80,443,445,3389,8080` | TCP ports for connect probes |
 | `--timeout` | `1.5` | Per-probe timeout (seconds) |
 | `--host-limit` | `256` | Max hosts enumerated per target CIDR |
+| `--workers` | `64` | Concurrent host probes |
 | `-o` / `--output` | `reports/` | Directory for JSON/Markdown reports |
+| `--html` | off | Also write a self-contained HTML report with the graph |
 | `--no-save` | off | Print to stdout only |
 
 ## Modules
@@ -120,6 +142,28 @@ wifileverage modules
 | `segment` | passive | Local subnet, gateway, DNS, ARP neighbours — your foothold |
 | `reach` | active | Reachability to in-scope hosts **across** segment boundaries |
 | `isolation` | active | Whether same-SSID peer stations can reach each other |
+
+## Segmentation intelligence
+
+This is what sets WiFiLeverage apart from a reachability scanner. Declare your zones and the flows you intend to permit:
+
+```yaml
+zones:
+  guest: ["192.168.50.0/24"]
+  corp:  ["10.20.0.0/16"]
+  iot:   ["192.168.60.0/24"]
+policy:
+  allow:
+    - { from: corp, to: iot }   # everything else must be isolated
+```
+
+A present `policy:` block means **default-deny**: any reachable flow not on the allow-list is a CRITICAL violation (an empty `allow: []` asserts full isolation). WiFiLeverage then produces:
+
+- **A policy matrix** — rows = from-zone, cols = to-zone, each cell `ok` / `!!` (violation) / `-` (untested).
+- **A segmentation graph** — rendered as ASCII, Mermaid (drops into Markdown/HTML) or Graphviz DOT.
+- **Multi-hop leverage paths** — run once per foothold, merge the JSON with `wifileverage graph a.json b.json`, and it chains the edges to surface pivots (`guest → dmz → corp`) no single hop reveals.
+
+Zones are probeable by default, so declaring them is enough — you don't have to repeat the ranges under `target_cidrs`.
 
 ## How scope works
 

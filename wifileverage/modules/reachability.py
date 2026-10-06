@@ -19,6 +19,7 @@ filtered through the scope first, so excluded networks are never touched.
 from __future__ import annotations
 
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from ..context import Context
@@ -49,11 +50,11 @@ class Reachability(Module):
             )
             return result
 
-        self.log.info("probing %d host(s) across segment boundaries", len(targets))
-        hosts: List[Host] = []
-        for addr in targets:
-            host = self._probe_host(addr, ctx.port_list, ctx.timeout)
-            hosts.append(host)
+        self.log.info(
+            "probing %d host(s) across segment boundaries (%d workers)", len(targets), ctx.workers
+        )
+        hosts = self.probe_many(targets, ctx.port_list, ctx.timeout, ctx.workers)
+        for host in hosts:
             if host.reachable:
                 self._record_reach(result, ctx, host)
 
@@ -90,13 +91,14 @@ class Reachability(Module):
         seg = ctx.current_segment
         current_net = netaddr.parse_network(seg.cidr) if (seg and seg.cidr) else None
 
-        if not ctx.scope.target_cidrs:
+        probe_cidrs = ctx.scope.probe_cidrs()
+        if not probe_cidrs:
             if seg and seg.gateway:
                 return [seg.gateway]
             return []
 
         targets: List[str] = []
-        for cidr in ctx.scope.target_cidrs:
+        for cidr in probe_cidrs:
             net = netaddr.parse_network(cidr)
             # Skip the segment we're already on — we want *cross*-segment reach.
             if current_net is not None and net.overlaps(current_net):
@@ -114,6 +116,14 @@ class Reachability(Module):
         return ordered[: ctx.host_limit]
 
     # ---- probing ------------------------------------------------------
+    def probe_many(self, addrs: List[str], ports: List[int], timeout: float, workers: int = 64) -> List[Host]:
+        """Probe many hosts concurrently; results preserve input order."""
+        if not addrs:
+            return []
+        workers = max(1, min(workers, len(addrs)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(lambda a: self._probe_host(a, ports, timeout), addrs))
+
     def _probe_host(self, addr: str, ports: List[int], timeout: float) -> Host:
         host = Host(address=addr)
         rtt = self._icmp(addr, timeout)

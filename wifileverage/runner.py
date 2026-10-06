@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+from .analysis.assemble import assemble
+from .analysis.policy import PolicyMatrix, Observation
 from .context import Context
+from .models import Finding, ModuleResult, Severity
 from .modules import REGISTRY
 from .modules.base import ACTIVE, Module
 from .report import Report
@@ -57,6 +60,7 @@ class Runner:
         port_list: Optional[List[int]] = None,
         timeout: float = 1.5,
         host_limit: int = 256,
+        workers: int = 64,
     ) -> None:
         self.ctx = Context(
             scope=scope,
@@ -64,6 +68,7 @@ class Runner:
             active=active,
             timeout=timeout,
             host_limit=host_limit,
+            workers=workers,
         )
         if port_list:
             self.ctx.port_list = port_list
@@ -88,4 +93,32 @@ class Runner:
             if result.skipped_reason:
                 log.info("[%s] skipped: %s", module.name, result.skipped_reason)
             self.report.add(result)
+
+        self._analyse()
         return self.report
+
+    def _analyse(self) -> None:
+        """Build the segmentation graph / policy matrix from module output."""
+        segment = self.ctx.current_segment
+        analysis = assemble(self.ctx.scope, self.report.results, segment)
+        self.report.analysis = analysis
+
+        # Surface policy violations as first-class CRITICAL findings.
+        if analysis.get("policy_findings"):
+            pol = ModuleResult(module="policy")
+            for raw in analysis["policy_findings"]:
+                pol.add(
+                    Finding(
+                        module="policy",
+                        title=raw["title"],
+                        severity=Severity(raw["severity"]),
+                        description=raw["description"],
+                        target=raw.get("target"),
+                        evidence=raw.get("evidence", {}),
+                        recommendation=raw.get("recommendation"),
+                    )
+                )
+            pol.data = {"matrix": analysis.get("matrix")}
+            self.report.add(pol)
+            if analysis.get("matrix"):
+                log.info("policy matrix evaluated: %d violation(s)", analysis["matrix"]["violations"])

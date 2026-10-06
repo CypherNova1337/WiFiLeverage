@@ -19,6 +19,7 @@ class Context:
     port_list: List[int] = field(default_factory=lambda: [22, 80, 443, 445, 3389, 8080])
     timeout: float = 1.5
     host_limit: int = 256
+    workers: int = 64  # concurrent host probes
 
     # Populated as earlier modules run, read by later ones.
     access_points: List[AccessPoint] = field(default_factory=list)
