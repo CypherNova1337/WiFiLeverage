@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Engagement output (never commit client data)
+reports/
+*.wlv.json
+*.engagement.json
+scope.yaml
+scope.yml
+!examples/scope.example.yaml
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
