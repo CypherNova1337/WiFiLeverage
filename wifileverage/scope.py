@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -41,6 +41,19 @@ class Scope:
     exclude_cidrs: List[str] = field(default_factory=list)
     notes: str = ""
 
+    # Named security zones (zone name -> list of CIDRs) and the intended
+    # isolation policy. By default every cross-zone flow is expected to be
+    # DENIED (isolated); `policy_allow` lists the (from_zone, to_zone) flows
+    # that are permitted. The policy engine flags any observed reachability
+    # that is not permitted as a segmentation violation.
+    zones: Dict[str, List[str]] = field(default_factory=dict)
+    policy_allow: List[Tuple[str, str]] = field(default_factory=list)
+    # True once a `policy:` block is present. When set, every cross-zone flow
+    # not in `policy_allow` is a violation (default-deny / full isolation),
+    # even if the allow-list is empty. Without a policy block, nothing is
+    # asserted as a violation.
+    policy_defined: bool = False
+
     # ---- construction -------------------------------------------------
     @classmethod
     def empty(cls) -> "Scope":
@@ -62,6 +75,11 @@ class Scope:
     def from_dict(cls, raw: dict) -> "Scope":
         if not isinstance(raw, dict):
             raise ScopeError("scope file must be a mapping")
+        zones_raw = raw.get("zones") or {}
+        if not isinstance(zones_raw, dict):
+            raise ScopeError("'zones' must be a mapping of zone-name -> list of CIDRs")
+        zones = {str(name): [str(c) for c in (cidrs or [])] for name, cidrs in zones_raw.items()}
+
         scope = cls(
             engagement=str(raw.get("engagement", "")),
             client=str(raw.get("client", "")),
@@ -69,11 +87,40 @@ class Scope:
             target_cidrs=[str(c) for c in (raw.get("target_cidrs") or [])],
             exclude_cidrs=[str(c) for c in (raw.get("exclude_cidrs") or [])],
             notes=str(raw.get("notes", "")),
+            zones=zones,
+            policy_allow=cls._parse_policy(raw.get("policy")),
+            policy_defined="policy" in raw and raw.get("policy") is not None,
         )
-        # Validate CIDRs eagerly so a typo fails loudly at load time.
-        netaddr.parse_networks(scope.target_cidrs)
-        netaddr.parse_networks(scope.exclude_cidrs)
+        # Validate CIDRs eagerly so a typo fails loudly (as a ScopeError) at
+        # load time rather than deep inside a probe later.
+        scope._validate_cidrs()
         return scope
+
+    def _validate_cidrs(self) -> None:
+        def _check(label: str, cidrs: List[str]) -> None:
+            try:
+                netaddr.parse_networks(cidrs)
+            except ValueError as exc:
+                raise ScopeError(f"invalid CIDR in {label}: {exc}") from exc
+
+        _check("target_cidrs", self.target_cidrs)
+        _check("exclude_cidrs", self.exclude_cidrs)
+        for name, cidrs in self.zones.items():
+            _check(f"zone {name!r}", cidrs)
+
+    @staticmethod
+    def _parse_policy(policy_raw) -> List[Tuple[str, str]]:
+        """Parse the optional ``policy.allow`` list of permitted flows."""
+        if not policy_raw:
+            return []
+        if not isinstance(policy_raw, dict):
+            raise ScopeError("'policy' must be a mapping with an 'allow' list")
+        allow: List[Tuple[str, str]] = []
+        for rule in policy_raw.get("allow") or []:
+            if not isinstance(rule, dict) or "from" not in rule or "to" not in rule:
+                raise ScopeError("each policy.allow rule needs 'from' and 'to' zone names")
+            allow.append((str(rule["from"]), str(rule["to"])))
+        return allow
 
     # ---- derived ------------------------------------------------------
     @property
@@ -95,6 +142,9 @@ class Scope:
             target_cidrs=list(self.target_cidrs),
             exclude_cidrs=list(self.exclude_cidrs),
             notes=self.notes,
+            zones={k: list(v) for k, v in self.zones.items()},
+            policy_allow=list(self.policy_allow),
+            policy_defined=self.policy_defined,
         )
         if include:
             new.target_cidrs.extend(include)
@@ -102,9 +152,58 @@ class Scope:
             new.exclude_cidrs.extend(exclude)
         if ssids:
             new.ssids.extend(ssids)
-        netaddr.parse_networks(new.target_cidrs)
-        netaddr.parse_networks(new.exclude_cidrs)
+        new._validate_cidrs()
         return new
+
+    # ---- zones & policy ----------------------------------------------
+    @property
+    def has_zones(self) -> bool:
+        return bool(self.zones)
+
+    def probe_cidrs(self) -> List[str]:
+        """CIDRs eligible for active probing.
+
+        Explicit ``target_cidrs`` win; otherwise the union of all zone CIDRs is
+        used, so declaring zones is enough to make them testable without
+        repeating the ranges under ``target_cidrs``.
+        """
+        if self.target_cidrs:
+            return list(self.target_cidrs)
+        cidrs: List[str] = []
+        for zone_cidrs in self.zones.values():
+            cidrs.extend(zone_cidrs)
+        return cidrs
+
+    def zone_of(self, address: str) -> Optional[str]:
+        """Return the name of the zone *address* belongs to, if any.
+
+        The most specific (longest-prefix) matching zone wins, so overlapping
+        zone definitions resolve deterministically.
+        """
+        best_zone = None
+        best_prefix = -1
+        for name, cidrs in self.zones.items():
+            for net in netaddr.parse_networks(cidrs):
+                try:
+                    if netaddr.address_in_networks(address, [net]) and net.prefixlen > best_prefix:
+                        best_zone = name
+                        best_prefix = net.prefixlen
+                except ValueError:
+                    continue
+        return best_zone
+
+    def flow_allowed(self, from_zone: str, to_zone: str) -> bool:
+        """Return True if traffic from *from_zone* to *to_zone* is permitted.
+
+        Same-zone traffic is always allowed; otherwise the flow must appear in
+        the policy allow-list. With no policy defined at all, nothing is
+        asserted as a violation (``flow_allowed`` returns True).
+        """
+        if from_zone == to_zone:
+            return True
+        if not self.policy_defined:
+            return True
+        return (from_zone, to_zone) in self.policy_allow
 
     # ---- membership tests --------------------------------------------
     def ssid_in_scope(self, ssid: str) -> bool:
@@ -136,5 +235,6 @@ class Scope:
             f"engagement={label!r} client={self.client or '-'!r} "
             f"ssids={len(self.ssids)} target_cidrs={len(self.target_cidrs)} "
             f"exclude_cidrs={len(self.exclude_cidrs)} "
+            f"zones={len(self.zones)} policy_allow={len(self.policy_allow)} "
             f"restricts_targets={self.restricts_targets}"
         )

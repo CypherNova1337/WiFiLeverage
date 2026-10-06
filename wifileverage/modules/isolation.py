@@ -48,9 +48,9 @@ class StationIsolation(Module):
 
         self.log.info("probing %d peer station(s) on %s", len(peers), seg.cidr)
         prober = Reachability()
+        probed = prober.probe_many(peers, ctx.port_list, ctx.timeout, ctx.workers)
         reachable: List[Host] = []
-        for addr in peers:
-            host = prober._probe_host(addr, ctx.port_list, ctx.timeout)
+        for host in probed:
             host.via = seg.interface
             if host.reachable:
                 reachable.append(host)

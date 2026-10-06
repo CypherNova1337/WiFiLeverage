@@ -64,9 +64,25 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--ports", type=_parse_ports, default="22,80,443,445,3389,8080", help="TCP ports for connect probes")
     run.add_argument("--timeout", type=float, default=1.5, help="Per-probe timeout in seconds")
     run.add_argument("--host-limit", type=int, default=256, help="Max hosts to enumerate per target CIDR")
+    run.add_argument("--workers", type=int, default=64, help="Concurrent host probes")
     run.add_argument("-o", "--output", default="reports", help="Directory for JSON/Markdown reports")
+    run.add_argument("--html", action="store_true", help="Also write a self-contained HTML report with the graph")
     run.add_argument("--no-save", action="store_true", help="Print to stdout only; do not write report files")
     run.set_defaults(func=cmd_run)
+
+    # ---- graph ----
+    graph = sub.add_parser("graph", help="Build a segmentation graph from one or more report JSON files")
+    graph.add_argument("reports", nargs="+", help="Report JSON file(s) — merge several footholds into one graph")
+    graph.add_argument(
+        "-f", "--format", choices=["ascii", "mermaid", "dot", "paths"], default="ascii", help="Output format"
+    )
+    graph.set_defaults(func=cmd_graph)
+
+    # ---- diff ----
+    diff = sub.add_parser("diff", help="Compare two reports: what changed in the segmentation")
+    diff.add_argument("baseline", help="Baseline report JSON")
+    diff.add_argument("current", help="Current report JSON")
+    diff.set_defaults(func=cmd_diff)
 
     # ---- scan ----
     scan = sub.add_parser("scan", help="Passive wireless recon only (list in-range APs)")
@@ -104,6 +120,7 @@ def cmd_run(args) -> int:
         port_list=ports,
         timeout=args.timeout,
         host_limit=args.host_limit,
+        workers=args.workers,
     )
     report = runner.run(modules)
     _emit(report, args)
@@ -147,11 +164,55 @@ def cmd_modules(args) -> int:
     return 0
 
 
+def cmd_graph(args) -> int:
+    import json
+
+    from .analysis.graph import SegmentGraph
+
+    reports = []
+    for path in args.reports:
+        try:
+            reports.append(json.loads(open(path, encoding="utf-8").read()))
+        except (OSError, ValueError) as exc:
+            print(f"could not read {path}: {exc}", file=sys.stderr)
+            return 2
+    g = SegmentGraph.from_reports(reports)
+    if args.format == "mermaid":
+        print(g.to_mermaid())
+    elif args.format == "dot":
+        print(g.to_dot())
+    elif args.format == "paths":
+        for start in sorted(g.nodes):
+            for path in g.leverage_paths(start):
+                if len(path) > 1:
+                    print(" -> ".join(path))
+    else:
+        print(g.to_ascii())
+    return 0
+
+
+def cmd_diff(args) -> int:
+    import json
+
+    from .analysis.diff import diff_reports
+
+    try:
+        base = json.loads(open(args.baseline, encoding="utf-8").read())
+        cur = json.loads(open(args.current, encoding="utf-8").read())
+    except (OSError, ValueError) as exc:
+        print(f"could not read report: {exc}", file=sys.stderr)
+        return 2
+    d = diff_reports(base, cur)
+    print(d.to_text())
+    return 1 if d.regressed else 0
+
+
 def _emit(report: Report, args) -> None:
     print(report.to_markdown())
     if not getattr(args, "no_save", False):
-        paths = report.write(args.output)
-        print(f"\nReports written:\n  {paths['markdown']}\n  {paths['json']}", file=sys.stderr)
+        paths = report.write(args.output, html=getattr(args, "html", False))
+        extra = f"\n  {paths['html']}" if "html" in paths else ""
+        print(f"\nReports written:\n  {paths['markdown']}\n  {paths['json']}{extra}", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

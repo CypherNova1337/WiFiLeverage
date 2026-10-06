@@ -28,3 +28,23 @@ exclude_cidrs:
 
 notes: >
   Written authorization on file ref SOW-2026-014. Testing window 09:00-17:00.
+
+# ---------------------------------------------------------------------------
+# Zones + policy (optional, but this is where WiFiLeverage earns its keep).
+#
+# Name your security zones, then declare the ONLY cross-zone flows that are
+# permitted. Everything else is expected to be isolated. WiFiLeverage probes
+# reality and renders a matrix: any reachable flow that isn't on the allow-list
+# is flagged as a CRITICAL segmentation violation, and the graph shows multi-
+# hop pivots (guest -> dmz -> corp) when you merge runs from several footholds.
+# ---------------------------------------------------------------------------
+zones:
+  guest: ["192.168.50.0/24"]
+  corp: ["10.20.0.0/16"]
+  iot: ["192.168.60.0/24"]
+
+policy:
+  # Permitted cross-zone flows. Omit a flow to assert it must be isolated.
+  allow:
+    - { from: corp, to: iot }      # IT may manage IoT devices
+    # guest -> anything is deliberately NOT listed: guest must be isolated.
