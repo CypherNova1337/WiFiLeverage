@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wifileverage"
+version = "0.1.0"
+description = "Authorized network-segmentation assessment framework for wireless penetration testing engagements."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "CypherNova1337" }]
+keywords = ["pentest", "wifi", "network-segmentation", "security-assessment", "wireless"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = [
+    "PyYAML>=5.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+wifileverage = "wifileverage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CypherNova1337/WiFiLeverage"
+Repository = "https://github.com/CypherNova1337/WiFiLeverage"
+
+[tool.setuptools.packages.find]
+include = ["wifileverage*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

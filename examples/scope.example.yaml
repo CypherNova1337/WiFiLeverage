@@ -1,0 +1,30 @@
+# WiFiLeverage engagement scope (optional).
+#
+# A scope file keeps a run inside the networks and SSIDs you list and never
+# touches an excluded one. It is a convenience, not a gate — WiFiLeverage runs
+# without it — but on a real engagement you should always define one.
+#
+# Only point WiFiLeverage at networks you own or are explicitly authorized to
+# test. See the "Authorized use" section of the README.
+
+engagement: "ACME guest-network segmentation review"
+client: "ACME Corp"
+
+# Restrict wireless work to these SSIDs (omit to consider every SSID in range).
+ssids:
+  - "ACME-Guest"
+  - "ACME-IoT"
+
+# Networks that ARE in scope. Cross-segment reachability is tested *between*
+# these, so list both the segment you expect to land on (guest) and the one it
+# should be isolated from (corporate).
+target_cidrs:
+  - "10.20.0.0/16"      # corporate VLAN — guest should NOT reach this
+  - "192.168.50.0/24"   # guest subnet
+
+# Networks that must never be probed, even if they fall inside a target range.
+exclude_cidrs:
+  - "10.20.9.0/24"      # out-of-scope management VLAN
+
+notes: >
+  Written authorization on file ref SOW-2026-014. Testing window 09:00-17:00.
